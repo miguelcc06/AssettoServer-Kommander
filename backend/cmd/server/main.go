@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -348,7 +349,15 @@ func serverConsoleHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func captureFrontendLogs() {
-	frontendLogPath := "/home/rs/web-gui-acserver/frontend/frontend.log"
+	frontendLogPath := os.Getenv("FRONTEND_LOG_PATH")
+	if frontendLogPath == "" {
+		log.Println("FRONTEND_LOG_PATH is not set; skipping frontend log tail")
+		return
+	}
+	if _, err := os.Stat(frontendLogPath); err != nil {
+		log.Printf("Frontend log file %s is not available; skipping frontend log tail", frontendLogPath)
+		return
+	}
 	cmd := exec.Command("tail", "-F", frontendLogPath)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -23,6 +23,32 @@ type UpgradeRequest struct {
 	PatreonKey     string `json:"patreonKey"`
 }
 
+func hostProjectDir() string {
+	if dir := os.Getenv("HOST_PROJECT_DIR"); dir != "" {
+		return dir
+	}
+	return "/app/host"
+}
+
+func composeBaseArgs() []string {
+	return []string{
+		"--project-directory", hostProjectDir(),
+		"--env-file", "/app/host/.env",
+		"-p", "web-gui-acserver",
+		"-f", "/app/host/docker-compose.yaml",
+	}
+}
+
+// runCompose prefers modern `docker compose` and falls back to `docker-compose`.
+func runCompose(args ...string) ([]byte, error) {
+	composeArgs := append(composeBaseArgs(), args...)
+	out, err := exec.Command("docker", append([]string{"compose"}, composeArgs...)...).CombinedOutput()
+	if err == nil {
+		return out, nil
+	}
+	return exec.Command("docker-compose", composeArgs...).CombinedOutput()
+}
+
 func ServerUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -76,11 +102,11 @@ func ServerUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf(`{"message": "GitHub authentication failed", "error": %q}`, string(loginOut)), http.StatusUnauthorized)
 			return
 		}
-		
+
 		// Save credentials for the background task
 		db.SetSetting("github_username", req.GithubUsername)
 		db.SetSetting("github_token", req.GithubToken)
-		
+
 		// Fetch the latest tag from GitHub API
 		latestTag := "latest"
 		resp, err := http.Get("https://api.github.com/repos/compujuckel/AssettoServer/releases/latest")
@@ -142,16 +168,10 @@ func ServerUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Restart AssettoServer container with docker compose
-	cmd := exec.Command("docker-compose", "--project-directory", "/home/rs/web-gui-acserver", "--env-file", "/app/host/.env", "-p", "web-gui-acserver", "-f", "/app/host/docker-compose.yaml", "up", "-d", "assettoserver")
-	out, err := cmd.CombinedOutput()
+	out, err := runCompose("up", "-d", "assettoserver")
 	if err != nil {
-		// fallback to `docker compose`
-		cmd = exec.Command("docker", "compose", "--project-directory", "/home/rs/web-gui-acserver", "--env-file", "/app/host/.env", "-p", "web-gui-acserver", "-f", "/app/host/docker-compose.yaml", "up", "-d", "assettoserver")
-		out, err = cmd.CombinedOutput()
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"message": "Failed to rebuild container", "error": %q}`, string(out)), http.StatusInternalServerError)
-			return
-		}
+		http.Error(w, fmt.Sprintf(`{"message": "Failed to rebuild container", "error": %q}`, string(out)), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -163,7 +183,7 @@ func ServerUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 func PerformAutoUpdate() (bool, error) {
 	username := db.GetSetting("github_username", "")
 	token := db.GetSetting("github_token", "")
-	
+
 	if username != "" && token != "" {
 		// 1. Login to GitHub Container Registry
 		loginCmd := exec.Command("docker", "login", "ghcr.io", "-u", username, "--password-stdin")
@@ -174,14 +194,12 @@ func PerformAutoUpdate() (bool, error) {
 	}
 
 	// 2. Pull the latest image
-	pullCmd := exec.Command("docker", "compose", "--project-directory", "/home/rs/web-gui-acserver", "--env-file", "/app/host/.env", "-p", "web-gui-acserver", "-f", "/app/host/docker-compose.yaml", "pull", "assettoserver")
-	if err := pullCmd.Run(); err != nil {
+	if _, err := runCompose("pull", "assettoserver"); err != nil {
 		return false, fmt.Errorf("Failed to pull image: %v", err)
 	}
 
 	// Check if the image was actually updated (docker compose pull output often says "Status: Downloaded newer image" or similar, or we just run up -d and it recreates)
-	upCmd := exec.Command("docker", "compose", "--project-directory", "/home/rs/web-gui-acserver", "--env-file", "/app/host/.env", "-p", "web-gui-acserver", "-f", "/app/host/docker-compose.yaml", "up", "-d", "assettoserver")
-	upOut, err := upCmd.CombinedOutput()
+	upOut, err := runCompose("up", "-d", "assettoserver")
 	if err != nil {
 		return false, fmt.Errorf("Failed to restart container: %v, output: %s", err, string(upOut))
 	}
@@ -191,7 +209,7 @@ func PerformAutoUpdate() (bool, error) {
 		// It updated!
 		return true, nil
 	}
-	
+
 	// If it says "Running" and not recreated, it means it was already up to date.
 	return false, nil
 }
@@ -200,7 +218,7 @@ func CheckUpdateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-	
+
 	if r.Method == "OPTIONS" {
 		return
 	}
@@ -362,16 +380,10 @@ RUN chmod +x /app/AssettoServer
 	}
 
 	// Restart AssettoServer container
-	upCmd := exec.Command("docker-compose", "--project-directory", "/home/rs/web-gui-acserver", "--env-file", "/app/host/.env", "-p", "web-gui-acserver", "-f", "/app/host/docker-compose.yaml", "up", "-d", "assettoserver")
-	out, err := upCmd.CombinedOutput()
+	out, err := runCompose("up", "-d", "assettoserver")
 	if err != nil {
-		// fallback to docker compose
-		upCmd = exec.Command("docker", "compose", "--project-directory", "/home/rs/web-gui-acserver", "--env-file", "/app/host/.env", "-p", "web-gui-acserver", "-f", "/app/host/docker-compose.yaml", "up", "-d", "assettoserver")
-		out, err = upCmd.CombinedOutput()
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"message": "Failed to rebuild container", "error": %q}`, string(out)), http.StatusInternalServerError)
-			return
-		}
+		http.Error(w, fmt.Sprintf(`{"message": "Failed to rebuild container", "error": %q}`, string(out)), http.StatusInternalServerError)
+		return
 	}
 
 	// Cleanup
@@ -382,4 +394,3 @@ RUN chmod +x /app/AssettoServer
 		"message": "Archive Patreon installée avec succès ! Le serveur redémarre.",
 	})
 }
-

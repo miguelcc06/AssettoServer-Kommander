@@ -26,12 +26,12 @@ func ProcessRawFiles(headers []*multipart.FileHeader) error {
 		if shouldIgnore(header.Filename) {
 			continue
 		}
-		
+
 		file, err := header.Open()
 		if err != nil {
 			return err
 		}
-		
+
 		err = saveFile(header.Filename, file)
 		file.Close()
 		if err != nil {
@@ -72,7 +72,7 @@ func processArchiveUniversal(file multipart.File, ext string) error {
 	// We search for known signature files (ui_track.json, ui_car.json) to locate the root of the mod.
 	basePath := os.Getenv("AC_CONTENT_PATH")
 	if basePath == "" {
-		basePath = "/home/rs/docker/acsm/server/assetto/content"
+		basePath = "/data/content"
 	}
 
 	script := fmt.Sprintf(`
@@ -151,11 +151,11 @@ func saveFile(relPath string, r io.Reader) error {
 
 	basePath := os.Getenv("AC_CONTENT_PATH")
 	if basePath == "" {
-		basePath = "/home/rs/docker/acsm/server/assetto/content"
+		basePath = "/data/content"
 	}
 
 	fullPath := filepath.Join(basePath, relPath)
-	
+
 	cleanBasePath := filepath.Clean(basePath)
 	cleanFullPath := filepath.Clean(fullPath)
 	if !strings.HasPrefix(cleanFullPath, cleanBasePath+string(os.PathSeparator)) {

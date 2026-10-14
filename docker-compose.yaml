@@ -10,7 +10,7 @@ services:
       - "8666:8666"
     volumes:
       - ./backend/runtime/data:/data
-      - /home/rs/docker/acsm/server/assetto/content:/data/content
+      - ./backend/runtime/data/content:/data/content
     environment:
       - TZ=Europe/Paris
     restart: always
@@ -25,10 +25,11 @@ services:
       - AC_CONTENT_PATH=/data/content
       - AC_PRESETS_PATH=/app/data/presets.json
       - AC_LOGS_PATH=/app/data/logs
+      - HOST_PROJECT_DIR=${HOST_PROJECT_DIR:-${PWD}}
       - PORT=8080
     volumes:
       - ./backend/runtime/data:/app/data
-      - /home/rs/docker/acsm/server/assetto/content:/data/content
+      - ./backend/runtime/data/content:/data/content
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/app/host
     restart: always
@@ -38,7 +39,7 @@ services:
       context: ./frontend
     container_name: KommanderFrontend
     ports:
-      - "3000:80"
+      - "${KOMMANDER_PORT:-8086}:80"
     depends_on:
       - kommander-backend
     restart: always

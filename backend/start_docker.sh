@@ -1,4 +1,5 @@
 #!/bin/bash
-cd /home/rs/docker/AssettoServer
-# Démarrer docker-compose. Les logs s'afficheront dans la sortie standard et seront captés par le backend Go.
-exec docker-compose up
+# Local helper. The supported entrypoint is the repository-root deploy.sh / docker compose.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${HOST_PROJECT_DIR:-$ROOT}"
+exec docker compose up

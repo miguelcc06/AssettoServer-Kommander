@@ -1,11 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
-	"encoding/json"
-	"net/http"
 
 	"web-gui-acserver/internal/services"
 )
@@ -130,7 +130,7 @@ func UploadFastLaneHandler(w http.ResponseWriter, r *http.Request) {
 
 	contentPath := os.Getenv("AC_CONTENT_PATH")
 	if contentPath == "" {
-		contentPath = "/home/rs/docker/acsm/server/assetto/content"
+		contentPath = "/data/content"
 	}
 
 	var aiDirPath string
@@ -166,4 +166,3 @@ func UploadFastLaneHandler(w http.ResponseWriter, r *http.Request) {
 		Message: "AI file uploaded successfully (" + header.Filename + ")",
 	})
 }
-

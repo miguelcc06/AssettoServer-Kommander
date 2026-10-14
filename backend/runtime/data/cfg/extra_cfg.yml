@@ -1,5 +1,5 @@
 EnablePlugins:
-  - FastTravelPlugin
+  - RandomWeatherPlugin
 EnableSteamAuth: false
 ValidateDlcOwnership: []
 MandatoryClientSecurityLevel: 0
