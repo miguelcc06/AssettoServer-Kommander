@@ -257,6 +257,13 @@ interface Track {
   layouts?: TrackLayout[]
 }
 
+interface InstalledContent {
+  type: string
+  id: string
+  url: string
+  version?: string
+}
+
 function PublicModeConfigView() {
   const [isPublic, setIsPublic] = useState(false)
   const [msg, setMsg] = useState({ type: '', text: '' })
@@ -656,8 +663,12 @@ function ContentConfigView() {
   
   const [msg, setMsg] = useState({ type: '', text: '' })
   const [uploading, setUploading] = useState(false)
+  const [preparing, setPreparing] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [isDragActive, setIsDragActive] = useState(false)
+  const [installed, setInstalled] = useState<InstalledContent[]>([])
+  const archiveInputRef = useRef<HTMLInputElement>(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
   
   const [cars, setCars] = useState<Car[]>([])
   const [tracks, setTracks] = useState<Track[]>([])
@@ -665,6 +676,13 @@ function ContentConfigView() {
   const [selectedCar, setSelectedCar] = useState<Car | null>(null)
   const [selectedSkin, setSelectedSkin] = useState<string>('')
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null)
+
+  useEffect(() => {
+    const node = folderInputRef.current
+    if (!node) return
+    node.setAttribute('webkitdirectory', '')
+    node.setAttribute('directory', '')
+  }, [])
 
   useEffect(() => {
     if (contentTab === 'cars') {
@@ -701,8 +719,10 @@ function ContentConfigView() {
   }
 
   const uploadFiles = (formData: FormData) => {
+    setPreparing(false)
     setUploading(true)
     setUploadProgress(0)
+    setInstalled([])
     setMsg({ type: 'info', text: 'Uploading (0%)...' })
     
     const xhr = new XMLHttpRequest()
@@ -713,7 +733,7 @@ function ContentConfigView() {
         const percent = Math.round((e.loaded / e.total) * 100)
         setUploadProgress(percent)
         if (percent >= 100) {
-          setMsg({ type: 'info', text: 'Upload complete. Extracting and installing (this may take a few minutes for large files)...' })
+          setMsg({ type: 'info', text: 'Upload complete. Detecting, installing and packaging for Content Manager...' })
         } else {
           setMsg({ type: 'info', text: `Uploading (${percent}%)...` })
         }
@@ -722,13 +742,15 @@ function ContentConfigView() {
     
     xhr.onload = () => {
       setUploading(false)
+      setUploadProgress(0)
+      if (archiveInputRef.current) archiveInputRef.current.value = ''
+      if (folderInputRef.current) folderInputRef.current.value = ''
+      let data: any = {}
+      try { data = JSON.parse(xhr.responseText) } catch (e) {}
       if (xhr.status >= 200 && xhr.status < 300) {
-        let data: any = {}
-        try { data = JSON.parse(xhr.responseText) } catch (e) {}
+        setInstalled(Array.isArray(data.installed) ? data.installed : [])
         setMsg({ type: 'success', text: data.message || 'Upload successful!' })
       } else {
-        let data: any = {}
-        try { data = JSON.parse(xhr.responseText) } catch (e) {}
         setMsg({ type: 'error', text: data.message || 'Error during upload' })
       }
     }
@@ -741,12 +763,40 @@ function ContentConfigView() {
     xhr.send(formData)
   }
 
+  const isArchiveName = (name: string) => {
+    const lower = name.toLowerCase()
+    return lower.endsWith('.zip') || lower.endsWith('.rar') || lower.endsWith('.7z')
+  }
+
+  const appendContentFile = (formData: FormData, file: File, relativePath: string) => {
+    const rel = (relativePath || file.name).replace(/\\/g, '/')
+    const base = rel.split('/').pop() || file.name
+    // Go's multipart parser keeps only the base filename, so the relative
+    // path travels in a parallel paths[] field.
+    if (isArchiveName(base)) {
+      formData.append('file', file, base)
+      return
+    }
+    formData.append('paths[]', rel)
+    formData.append('files[]', file, base)
+  }
+
+  const appendSelectedFiles = (files: FileList | File[], formData: FormData) => {
+    let count = 0
+    for (const file of Array.from(files)) {
+      const relative = file.webkitRelativePath || file.name
+      appendContentFile(formData, file, relative)
+      count++
+    }
+    return count
+  }
+
   const traverseDirectory = async (entry: FileSystemEntry, path: string, formData: FormData) => {
     if (entry.isFile) {
       const fileEntry = entry as FileSystemFileEntry
       return new Promise<void>((resolve) => {
         fileEntry.file((file) => {
-          formData.append('files[]', file, path + file.name)
+          appendContentFile(formData, file, path + file.name)
           resolve()
         })
       })
@@ -776,39 +826,57 @@ function ContentConfigView() {
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragActive(false)
+    if (uploading || preparing) return
     
     if (e.dataTransfer.items) {
       const formData = new FormData()
-      let hasFiles = false
-      let hasFolders = false
+      let hasContent = false
+      setPreparing(true)
+      setMsg({ type: 'info', text: 'Reading dropped files...' })
 
-      for (let i = 0; i < e.dataTransfer.items.length; i++) {
-        const item = e.dataTransfer.items[i]
-        if (item.kind === 'file') {
-          const entry = item.webkitGetAsEntry()
-          if (entry) {
-            if (entry.isDirectory) {
-              hasFolders = true
-              await traverseDirectory(entry, '', formData)
-            } else {
-              hasFiles = true
-              const file = item.getAsFile()
-              if (file) {
-                if (file.name.endsWith('.zip') || file.name.endsWith('.rar') || file.name.endsWith('.7z')) {
-                  formData.append('file', file)
-                } else {
-                  formData.append('files[]', file, file.name)
+      try {
+        for (let i = 0; i < e.dataTransfer.items.length; i++) {
+          const item = e.dataTransfer.items[i]
+          if (item.kind === 'file') {
+            const entry = item.webkitGetAsEntry()
+            if (entry) {
+              if (entry.isDirectory) {
+                await traverseDirectory(entry, '', formData)
+                hasContent = true
+              } else {
+                const file = item.getAsFile()
+                if (file) {
+                  appendSelectedFiles([file], formData)
+                  hasContent = true
                 }
               }
             }
           }
         }
+      } catch (err: any) {
+        setPreparing(false)
+        setMsg({ type: 'error', text: 'Could not read the dropped folder: ' + err.message })
+        return
       }
 
-      if (hasFiles || hasFolders) {
+      if (hasContent) {
         uploadFiles(formData)
+      } else {
+        setPreparing(false)
+        setMsg({ type: 'error', text: 'Drop a .zip, .rar, .7z archive or a car/track folder.' })
       }
     }
+  }
+
+  const handleBrowse = (files: FileList | null) => {
+    if (!files || files.length === 0 || uploading || preparing) return
+    const formData = new FormData()
+    const count = appendSelectedFiles(files, formData)
+    if (count === 0) {
+      setMsg({ type: 'error', text: 'No files selected.' })
+      return
+    }
+    uploadFiles(formData)
   }
 
   return (
@@ -841,10 +909,11 @@ function ContentConfigView() {
       <div style={{ padding: '30px' }}>
         {contentTab === 'upload' && (
           <>
-            <h2 style={{ marginTop: 0 }}>Content Management (Smart Upload)</h2>
+            <h2 style={{ marginTop: 0 }}>Upload cars and tracks</h2>
             <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '0.9rem' }}>
-              Drag and drop your archives (.zip, .rar) or complete mod folders here. 
-              The server will automatically extract useful files and ignore heavy graphical assets (.kn5, .dds).
+              Drop a <strong>.zip</strong>, <strong>.rar</strong>, <strong>.7z</strong> or a car/track folder.
+              Kommander detects the content from <code>ui/ui_car.json</code>, <code>data.acd</code> and <code>ui/ui_track.json</code>,
+              installs it, and publishes a Content Manager package (<code>content/cars/&lt;id&gt;</code> or <code>content/tracks/&lt;id&gt;</code>).
             </p>
 
             {msg.text && (
@@ -856,16 +925,38 @@ function ContentConfigView() {
               </div>
             )}
 
+            {(uploading || preparing) && (
+              <div
+                className="upload-progress"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={uploading && uploadProgress < 100 ? uploadProgress : undefined}
+                aria-label="Upload progress"
+              >
+                <div
+                  className={`upload-progress-bar ${preparing || uploadProgress >= 100 ? 'indeterminate' : ''}`}
+                  style={preparing || uploadProgress >= 100 ? undefined : { width: `${Math.max(uploadProgress, 3)}%` }}
+                />
+              </div>
+            )}
+
             <div 
-              className={`dropzone ${isDragActive ? 'active' : ''} ${uploading ? 'uploading' : ''}`}
+              className={`dropzone ${isDragActive ? 'active' : ''} ${uploading || preparing ? 'uploading' : ''}`}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
-              {uploading ? (
+              {uploading || preparing ? (
                 <div className="dropzone-content">
                   <div className="spinner"></div>
-                  <p>{uploadProgress >= 100 ? "Extraction in progress, please wait..." : `Uploading (${uploadProgress}%), please wait...`}</p>
+                  <p>
+                    {preparing
+                      ? 'Reading folder...'
+                      : uploadProgress >= 100
+                        ? 'Packaging for Content Manager...'
+                        : `Uploading (${uploadProgress}%)`}
+                  </p>
                 </div>
               ) : (
                 <div className="dropzone-content">
@@ -874,10 +965,52 @@ function ContentConfigView() {
                     <polyline points="17 8 12 3 7 8"></polyline>
                     <line x1="12" y1="3" x2="12" y2="15"></line>
                   </svg>
-                  <p>Drag your mods here (.zip, .rar, or folder)</p>
+                  <p>Drag a car or track here</p>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '6px' }}>.zip, .rar, .7z or a folder</p>
+                  <div className="upload-actions">
+                    <button type="button" className="btn-save" onClick={() => archiveInputRef.current?.click()}>
+                      Choose archive
+                    </button>
+                    <button type="button" className="btn-save upload-secondary" onClick={() => folderInputRef.current?.click()}>
+                      Choose folder
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
+            <input
+              ref={archiveInputRef}
+              type="file"
+              accept=".zip,.rar,.7z,application/zip,application/x-7z-compressed,application/vnd.rar"
+              multiple
+              hidden
+              onChange={(e) => handleBrowse(e.target.files)}
+            />
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => handleBrowse(e.target.files)}
+            />
+
+            {installed.length > 0 && (
+              <div className="installed-list">
+                <h3>Ready for Content Manager</h3>
+                {installed.map((item) => (
+                  <div className="installed-item" key={`${item.type}-${item.id}`}>
+                    <span className={`installed-badge ${item.type === 'track' ? 'track' : 'car'}`}>
+                      {item.type === 'track' ? 'Track' : 'Car'}
+                    </span>
+                    <div className="installed-meta">
+                      <strong>{item.id}</strong>
+                      {item.version ? <span>version {item.version}</span> : null}
+                      <a href={item.url} target="_blank" rel="noreferrer">{item.url}</a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
 

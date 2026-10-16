@@ -7,6 +7,9 @@ cd "$ROOT"
 mkdir -p \
   backend/runtime/data/content/cars \
   backend/runtime/data/content/tracks \
+  backend/runtime/data/downloads \
+  backend/runtime/data/cm_content \
+  backend/runtime/data/cfg/cm_content \
   backend/runtime/data/logs \
   backend/runtime/data/cfg
 

@@ -2,16 +2,21 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"web-gui-acserver/internal/services"
 )
 
 type UploadResponse struct {
-	Message string `json:"message"`
+	Message   string                   `json:"message"`
+	Installed []services.InstalledItem `json:"installed,omitempty"`
 }
 
 // UploadContentHandler gère la route /api/content/upload
@@ -49,34 +54,102 @@ func UploadContentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if it's a single archive
-	file, header, err := r.FormFile("file")
-	if err == nil {
-		defer file.Close()
-		err = services.ProcessUpload(file, header)
+	var installed []services.InstalledItem
+	archives := r.MultipartForm.File["file"]
+	rawFiles := r.MultipartForm.File["files[]"]
+	if len(archives) == 0 && len(rawFiles) == 0 {
+		writeUploadError(w, http.StatusBadRequest, "No file uploaded")
+		return
+	}
+
+	for _, header := range archives {
+		file, err := header.Open()
 		if err != nil {
-			http.Error(w, `{"message": "Error processing archive: `+err.Error()+`"}`, http.StatusInternalServerError)
+			writeUploadError(w, http.StatusBadRequest, "Error reading archive: "+err.Error())
 			return
 		}
-	} else {
-		// Try raw files
-		files := r.MultipartForm.File["files[]"]
-		if len(files) > 0 {
-			err = services.ProcessRawFiles(files)
-			if err != nil {
-				http.Error(w, `{"message": "Error processing files: `+err.Error()+`"}`, http.StatusInternalServerError)
-				return
-			}
-		} else {
-			http.Error(w, `{"message": "No file uploaded"}`, http.StatusBadRequest)
+		items, err := services.ProcessUpload(file, header)
+		file.Close()
+		if err != nil {
+			writeUploadError(w, http.StatusInternalServerError, "Error processing archive: "+err.Error())
 			return
 		}
+		installed = append(installed, items...)
+	}
+
+	if len(rawFiles) > 0 {
+		paths := r.MultipartForm.Value["paths[]"]
+		if len(paths) > 0 && len(paths) != len(rawFiles) {
+			writeUploadError(w, http.StatusBadRequest, "Upload paths did not match the uploaded files")
+			return
+		}
+		applyRelativePaths(rawFiles, paths)
+		items, err := services.ProcessRawFiles(rawFiles)
+		if err != nil {
+			writeUploadError(w, http.StatusInternalServerError, "Error processing files: "+err.Error())
+			return
+		}
+		installed = append(installed, items...)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(UploadResponse{
-		Message: "Content uploaded and filtered successfully",
+		Message:   uploadSummary(installed),
+		Installed: installed,
 	})
+}
+
+// applyRelativePaths restores folder structure. Go keeps only the base
+// filename from multipart Content-Disposition, so the browser sends the
+// original relative path in paths[].
+func applyRelativePaths(files []*multipart.FileHeader, paths []string) {
+	if len(paths) != len(files) {
+		return
+	}
+	for i, header := range files {
+		rel := strings.TrimSpace(paths[i])
+		if rel == "" || header == nil {
+			continue
+		}
+		header.Filename = rel
+	}
+}
+
+func uploadSummary(installed []services.InstalledItem) string {
+	cars, tracks := 0, 0
+	for _, item := range installed {
+		if item.Type == "track" {
+			tracks++
+			continue
+		}
+		cars++
+	}
+	return fmt.Sprintf("Installed %d car(s) and %d track(s), packaged for Content Manager.", cars, tracks)
+}
+
+func writeUploadError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(UploadResponse{Message: message})
+}
+
+// DownloadHandler serves packaged car and track zips from AC_DOWNLOADS_PATH.
+func DownloadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rel := strings.TrimPrefix(r.URL.Path, "/downloads/")
+	cleaned := path.Clean("/" + rel)
+	name := path.Base(cleaned)
+	if name != strings.TrimPrefix(cleaned, "/") || !strings.HasSuffix(strings.ToLower(name), ".zip") {
+		http.NotFound(w, r)
+		return
+	}
+
+	full := filepath.Join(services.DownloadsDir(), name)
+	http.ServeFile(w, r, full)
 }
 
 // UploadFastLaneHandler gère la route /api/content/tracks/upload-fastlane

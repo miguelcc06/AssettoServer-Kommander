@@ -14,10 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
-	
+
+	"web-gui-acserver/internal/api"
 	"web-gui-acserver/internal/db"
 	"web-gui-acserver/internal/process"
-	"web-gui-acserver/internal/api"
 )
 
 type HealthResponse struct {
@@ -46,7 +46,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	response := HealthResponse{
 		Status:  "ok",
@@ -81,12 +81,12 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	
+
 	if user.MustChangePassword {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"require_password_change": true,
-			"message": "Changement de mot de passe requis",
+			"message":                 "Changement de mot de passe requis",
 		})
 		return
 	}
@@ -130,7 +130,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		SameSite: http.SameSiteLaxMode,
 	})
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"message": "Logged out"})
 }
@@ -250,10 +250,10 @@ func serverStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	status := process.Manager.GetStatus()
-	
+
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": string(status),
 	})
@@ -268,15 +268,15 @@ func serverStartHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message": "Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	if err := process.Manager.Start(); err != nil {
 		http.Error(w, fmt.Sprintf(`{"message": "%v"}`, err), http.StatusBadRequest)
 		return
 	}
 	db.LogAction("Server started", "Admin")
-	
+
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Server started",
 	})
@@ -291,15 +291,15 @@ func serverStopHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message": "Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	if err := process.Manager.Stop(); err != nil {
 		http.Error(w, fmt.Sprintf(`{"message": "%v"}`, err), http.StatusBadRequest)
 		return
 	}
 	db.LogAction("Server stopped", "Admin")
-	
+
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Stop signal sent",
 	})
@@ -386,23 +386,23 @@ func main() {
 			if now.After(next) {
 				next = next.Add(24 * time.Hour)
 			}
-			
+
 			time.Sleep(time.Until(next))
-			
+
 			if db.GetSetting("auto_update_enabled", "false") == "true" {
 				fmt.Println("[AutoUpdater] Running daily update check...")
 				api.PerformAutoUpdate()
 			}
 		}
 	}()
-	
+
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, relying on environment variables")
 	}
-	
+
 	// Hook up logs to broadcast to websockets
 	log.SetOutput(process.BackendLogger)
-	
+
 	// Capture frontend logs
 	captureFrontendLogs()
 
@@ -425,7 +425,7 @@ func main() {
 	http.HandleFunc("/api/config/general", AuthMiddleware(api.ConfigGeneralHandler))
 	http.HandleFunc("/api/config/event", AuthMiddleware(api.ConfigEventHandler))
 	http.HandleFunc("/api/config/ai", AuthMiddleware(api.ConfigAIHandler))
-	
+
 	http.HandleFunc("/api/plugins/available", AuthMiddleware(api.GetAvailablePluginsHandler))
 	http.HandleFunc("/api/plugins/config", AuthMiddleware(api.PluginConfigHandler))
 	http.HandleFunc("/api/plugins/custom", AuthMiddleware(api.CustomPluginsHandler))
@@ -442,6 +442,7 @@ func main() {
 	http.HandleFunc("/api/upgrade/check", AuthMiddleware(api.CheckUpdateHandler))
 
 	http.HandleFunc("/api/content/upload", AuthMiddleware(api.UploadContentHandler))
+	http.HandleFunc("/downloads/", api.DownloadHandler)
 	http.HandleFunc("/api/content/tracks/upload-fastlane", AuthMiddleware(api.UploadFastLaneHandler))
 	http.HandleFunc("/api/content/cars", AuthMiddleware(api.GetCarsHandler))
 	http.HandleFunc("/api/content/cars/image", AuthMiddleware(api.GetCarImageHandler))
@@ -449,11 +450,11 @@ func main() {
 	http.HandleFunc("/api/content/tracks", AuthMiddleware(api.GetTracksHandler))
 	http.HandleFunc("/api/content/tracks/image", AuthMiddleware(api.GetTrackImageHandler))
 	http.HandleFunc("/api/content/tracks/layout_image", AuthMiddleware(api.GetTrackLayoutImageHandler))
-	
+
 	http.HandleFunc("/api/logs/backend", AuthMiddleware(api.StreamBackendLogsHandler))
 	http.HandleFunc("/api/logs/acsm", AuthMiddleware(api.StreamACSMLogsHandler))
 	http.HandleFunc("/api/logs/audit", AuthMiddleware(api.StreamAuditLogsHandler))
-	
+
 	http.HandleFunc("/api/presets", AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			api.CreatePresetHandler(w, r)
@@ -478,7 +479,7 @@ func main() {
 
 	port := ":8080"
 	log.Printf("Starting backend server on port %s\n", port)
-	
+
 	if err := http.ListenAndServe(port, nil); err != nil {
 		log.Fatalf("Server failed to start: %v\n", err)
 	}
