@@ -7,26 +7,28 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"web-gui-acserver/internal/process"
-	"web-gui-acserver/internal/db"
+
 	"web-gui-acserver/internal/configparser"
-	"regexp"
+	"web-gui-acserver/internal/db"
+	"web-gui-acserver/internal/process"
+	"web-gui-acserver/internal/services"
 )
 
 type WeatherPreset struct {
-	Graphics             string `json:"graphics"`
+	Graphics               string `json:"graphics"`
 	BaseTemperatureAmbient int    `json:"baseTemperatureAmbient"`
 	BaseTemperatureRoad    int    `json:"baseTemperatureRoad"`
-	VariationAmbient     int    `json:"variationAmbient"`
-	VariationRoad        int    `json:"variationRoad"`
-	WindBaseSpeedMin     int    `json:"windBaseSpeedMin"`
-	WindBaseSpeedMax     int    `json:"windBaseSpeedMax"`
-	WindBaseDirection    int    `json:"windBaseDirection"`
-	WindVariationDirection int  `json:"windVariationDirection"`
+	VariationAmbient       int    `json:"variationAmbient"`
+	VariationRoad          int    `json:"variationRoad"`
+	WindBaseSpeedMin       int    `json:"windBaseSpeedMin"`
+	WindBaseSpeedMax       int    `json:"windBaseSpeedMax"`
+	WindBaseDirection      int    `json:"windBaseDirection"`
+	WindVariationDirection int    `json:"windVariationDirection"`
 }
 
 type EntryListSlot struct {
@@ -56,24 +58,24 @@ type SessionsPreset struct {
 }
 
 type EventPreset struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Track       string          `json:"track"`
-	TrackLayout string          `json:"trackLayout"`
-	AvailableCars []string      `json:"availableCars"`
-	MaxClients  int             `json:"maxClients"`
-	Password    string          `json:"password"`
-	LoopMode    bool            `json:"loopMode"`
-	Weather     WeatherPreset   `json:"weather"`
-	Sessions    SessionsPreset  `json:"sessions"`
-	EntryList   []EntryListSlot `json:"entryList"`
-	Traffic     []TrafficConfig `json:"traffic"`
-	AiMaxCars   int             `json:"aiMaxCars"`
-	AiMinDistance int           `json:"aiMinDistance"`
-	CspExtraOptions string      `json:"cspExtraOptions,omitempty"`
-	CreatedAt   time.Time       `json:"createdAt"`
-	UpdatedAt   time.Time       `json:"updatedAt"`
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	Track           string          `json:"track"`
+	TrackLayout     string          `json:"trackLayout"`
+	AvailableCars   []string        `json:"availableCars"`
+	MaxClients      int             `json:"maxClients"`
+	Password        string          `json:"password"`
+	LoopMode        bool            `json:"loopMode"`
+	Weather         WeatherPreset   `json:"weather"`
+	Sessions        SessionsPreset  `json:"sessions"`
+	EntryList       []EntryListSlot `json:"entryList"`
+	Traffic         []TrafficConfig `json:"traffic"`
+	AiMaxCars       int             `json:"aiMaxCars"`
+	AiMinDistance   int             `json:"aiMinDistance"`
+	CspExtraOptions string          `json:"cspExtraOptions,omitempty"`
+	CreatedAt       time.Time       `json:"createdAt"`
+	UpdatedAt       time.Time       `json:"updatedAt"`
 }
 
 func getPresetsPath() string {
@@ -166,7 +168,7 @@ func CreatePresetHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	
+
 	db.LogAction("Created event '"+preset.Name+"'", "Admin")
 
 	w.Header().Set("Content-Type", "application/json")
@@ -209,9 +211,9 @@ func UpdatePresetHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			
+
 			db.LogAction("Updated event '"+updatedPreset.Name+"'", "Admin")
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(updatedPreset)
 			return
@@ -246,9 +248,9 @@ func DeletePresetHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			
+
 			db.LogAction("Deleted event ID '"+id+"'", "Admin")
-			
+
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -287,24 +289,53 @@ func LaunchPresetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := applyPresetConfig(targetPreset); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Restart Assetto Corsa after the configs and the Content Manager track
+	// entry match the selected event.
+	err = process.Manager.Restart()
+	if err != nil {
+		http.Error(w, "Failed to restart server: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	db.LogAction("Launched event '"+targetPreset.Name+"'", "Admin")
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func applyPresetConfig(targetPreset *EventPreset) error {
 	// 1. Generate server_cfg.ini
 	cfgPath := os.Getenv("AC_SERVER_INI_PATH")
 	if cfgPath == "" {
 		cfgPath = "data/cfg/server_cfg.ini"
 	}
-	
+
 	// Preserve existing settings
 	currName := configparser.ReadINI(cfgPath, "SERVER", "NAME")
-	if currName == "" { currName = "Web GUI Server" }
+	if currName == "" {
+		currName = "Web GUI Server"
+	}
 	currAdmin := configparser.ReadINI(cfgPath, "SERVER", "ADMIN_PASSWORD")
-	if currAdmin == "" { currAdmin = "adminpass" }
+	if currAdmin == "" {
+		currAdmin = "adminpass"
+	}
 	currHTTP := configparser.ReadINI(cfgPath, "SERVER", "HTTP_PORT")
-	if currHTTP == "" { currHTTP = "8081" }
+	if currHTTP == "" {
+		currHTTP = "8081"
+	}
 	currTCP := configparser.ReadINI(cfgPath, "SERVER", "TCP_PORT")
-	if currTCP == "" { currTCP = "9600" }
+	if currTCP == "" {
+		currTCP = "9600"
+	}
 	currUDP := configparser.ReadINI(cfgPath, "SERVER", "UDP_PORT")
-	if currUDP == "" { currUDP = "9600" }
-	
+	if currUDP == "" {
+		currUDP = "9600"
+	}
+
 	carsStr := strings.Join(targetPreset.AvailableCars, ";")
 
 	var sessionsBuilder strings.Builder
@@ -318,12 +349,12 @@ func LaunchPresetHandler(w http.ResponseWriter, r *http.Request) {
 		sessionsBuilder.WriteString(fmt.Sprintf("[RACE]\nNAME=Race\nLAPS=%d\nTIME=%d\nWAIT_TIME=60\nIS_OPEN=1\n\n", targetPreset.Sessions.Race.Laps, targetPreset.Sessions.Race.Time))
 	}
 
-		loopModeInt := 0
-		if targetPreset.LoopMode {
-			loopModeInt = 1
-		}
-		
-		serverCfgContent := fmt.Sprintf(`[SERVER]
+	loopModeInt := 0
+	if targetPreset.LoopMode {
+		loopModeInt = 1
+	}
+
+	serverCfgContent := fmt.Sprintf(`[SERVER]
 NAME=%s
 CARS=%s
 TRACK=%s
@@ -357,6 +388,11 @@ LOCKED_ENTRY_LIST=1
 LOOP_MODE=%d
 NUM_THREADS=2
 ALLOWED_TYRES_OUT=-1
+ABS_ALLOWED=1
+TC_ALLOWED=1
+STABILITY_ALLOWED=1
+AUTOCLUTCH_ALLOWED=1
+TYRE_BLANKETS_ALLOWED=1
 
 %s
 [DYNAMIC_TRACK]
@@ -375,17 +411,16 @@ WIND_BASE_SPEED_MIN=%d
 WIND_BASE_SPEED_MAX=%d
 WIND_BASE_DIRECTION=%d
 WIND_VARIATION_DIRECTION=%d
-`, 
+`,
 		currName, carsStr, targetPreset.Track, targetPreset.TrackLayout, targetPreset.Password, currAdmin, currUDP, currTCP, currHTTP, targetPreset.MaxClients, loopModeInt,
 		sessionsBuilder.String(),
 		targetPreset.Weather.Graphics, targetPreset.Weather.BaseTemperatureAmbient, targetPreset.Weather.BaseTemperatureRoad,
 		targetPreset.Weather.VariationAmbient, targetPreset.Weather.VariationRoad, targetPreset.Weather.WindBaseSpeedMin,
 		targetPreset.Weather.WindBaseSpeedMax, targetPreset.Weather.WindBaseDirection, targetPreset.Weather.WindVariationDirection)
 
-	err = ioutil.WriteFile(cfgPath, []byte(serverCfgContent), 0644)
+	err := ioutil.WriteFile(cfgPath, []byte(serverCfgContent), 0644)
 	if err != nil {
-		http.Error(w, "Failed to write server_cfg.ini: "+err.Error(), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to write server_cfg.ini: %w", err)
 	}
 
 	// 2. Generate entry_list.ini
@@ -393,7 +428,7 @@ WIND_VARIATION_DIRECTION=%d
 
 	var entryListBuilder strings.Builder
 	slotIndex := 0
-	
+
 	// Human slots
 	for _, slot := range targetPreset.EntryList {
 		entryListBuilder.WriteString(fmt.Sprintf(`[CAR_%d]
@@ -432,8 +467,7 @@ AI=fixed
 
 	err = ioutil.WriteFile(entryListPath, []byte(entryListBuilder.String()), 0644)
 	if err != nil {
-		http.Error(w, "Failed to write entry_list.ini: "+err.Error(), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to write entry_list.ini: %w", err)
 	}
 
 	// 3. Generate extra_cfg.yml safely (without overwriting plugins)
@@ -478,22 +512,22 @@ IgnoreConfigurationErrors:
 	} else {
 		// Use regex to update AI settings while preserving plugins and comments
 		contentStr := string(existingExtraCfg)
-		
+
 		reEnable := regexp.MustCompile(`(?m)^EnableAi:\s*(true|false)`)
 		contentStr = reEnable.ReplaceAllString(contentStr, fmt.Sprintf("EnableAi: %s", enableAiStr))
-		
+
 		reMaxAi := regexp.MustCompile(`(?m)^\s*MaxAiTargetCount:\s*\d+`)
 		contentStr = reMaxAi.ReplaceAllString(contentStr, fmt.Sprintf("  MaxAiTargetCount: %d", targetPreset.AiMaxCars))
-		
+
 		reAiPerPlayer := regexp.MustCompile(`(?m)^\s*AiPerPlayerTargetCount:\s*\d+`)
 		contentStr = reAiPerPlayer.ReplaceAllString(contentStr, fmt.Sprintf("  AiPerPlayerTargetCount: %d", targetPreset.AiMaxCars))
-		
+
 		rePlayerRadius := regexp.MustCompile(`(?m)^\s*PlayerRadiusMeters:\s*\d+`)
 		contentStr = rePlayerRadius.ReplaceAllString(contentStr, fmt.Sprintf("  PlayerRadiusMeters: %d", targetPreset.AiMinDistance))
-		
+
 		ioutil.WriteFile(extraCfgPath, []byte(contentStr), 0644)
 	}
-	
+
 	// Write csp_extra_options.ini
 	cspOptionsPath := filepath.Join(filepath.Dir(cfgPath), "csp_extra_options.ini")
 	if targetPreset.CspExtraOptions != "" {
@@ -503,14 +537,8 @@ IgnoreConfigurationErrors:
 		ioutil.WriteFile(cspOptionsPath, []byte(""), 0644)
 	}
 
-	// 4. Restart Assetto Corsa docker server via process manager
-	err = process.Manager.Restart()
-	if err != nil {
-		http.Error(w, "Failed to restart server: "+err.Error(), http.StatusInternalServerError)
-		return
+	if err := services.SyncActiveTrack(targetPreset.Track); err != nil {
+		return fmt.Errorf("failed to sync Content Manager track: %w", err)
 	}
-	
-	db.LogAction("Launched event '"+targetPreset.Name+"'", "Admin")
-
-	w.WriteHeader(http.StatusOK)
+	return nil
 }

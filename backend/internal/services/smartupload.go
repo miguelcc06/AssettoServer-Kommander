@@ -525,6 +525,165 @@ func updateOneCMContent(path string, installed []InstalledItem, uploadedTracks [
 		}
 	}
 
+	return writeCMDocument(path, doc)
+}
+
+// SyncActiveTrack points every cm_content/content.json "track" object at the
+// download entry for trackID. Content Manager uses that object as the track
+// players must fetch for the running event, so a preset launch has to follow
+// the selected circuit instead of leaving the previously uploaded one active.
+func SyncActiveTrack(trackID string) error {
+	trackID = strings.TrimSpace(trackID)
+	if trackID == "" {
+		return nil
+	}
+
+	cmMu.Lock()
+	defer cmMu.Unlock()
+
+	paths := cmContentPaths()
+	type loadedCM struct {
+		path    string
+		doc     map[string]any
+		existed bool
+	}
+	docs := make([]loadedCM, 0, len(paths))
+	var shared map[string]any
+	sharedKey := trackID
+
+	for _, path := range paths {
+		doc := map[string]any{}
+		data, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		existed := err == nil
+		if existed && len(strings.TrimSpace(string(data))) > 0 {
+			if err := json.Unmarshal(data, &doc); err != nil {
+				return fmt.Errorf("read %s: %w", path, err)
+			}
+		}
+		if shared == nil {
+			if entry, key, ok := lookupTrackEntry(mapFrom(doc["tracks"]), trackID); ok {
+				shared = entry
+				sharedKey = key
+			}
+		}
+		docs = append(docs, loadedCM{path: path, doc: doc, existed: existed})
+	}
+
+	if shared == nil {
+		if entry, ok := downloadEntryForTrack(trackID); ok {
+			shared = entry
+		}
+	}
+	if shared == nil {
+		return nil
+	}
+
+	anyExisted := false
+	for _, item := range docs {
+		if item.existed {
+			anyExisted = true
+			break
+		}
+	}
+
+	var firstErr error
+	for _, item := range docs {
+		if anyExisted && !item.existed {
+			continue
+		}
+		tracks := mapFrom(item.doc["tracks"])
+		key := sharedKey
+		entry := shared
+		if local, localKey, ok := lookupTrackEntry(tracks, trackID); ok {
+			key = localKey
+			entry = local
+		}
+		tracks[key] = cloneMap(entry)
+		item.doc["tracks"] = tracks
+		item.doc["track"] = cloneMap(entry)
+		if err := writeCMDocument(item.path, item.doc); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func lookupTrackEntry(tracks map[string]any, trackID string) (map[string]any, string, bool) {
+	if entry, ok := coerceTrackEntry(tracks[trackID]); ok {
+		return entry, trackID, true
+	}
+	for id, raw := range tracks {
+		if strings.EqualFold(id, trackID) {
+			if entry, ok := coerceTrackEntry(raw); ok {
+				return entry, id, true
+			}
+		}
+	}
+	return nil, "", false
+}
+
+func coerceTrackEntry(raw any) (map[string]any, bool) {
+	switch v := raw.(type) {
+	case map[string]any:
+		if v == nil {
+			return nil, false
+		}
+		urlValue, _ := v["url"].(string)
+		if strings.TrimSpace(urlValue) == "" {
+			return nil, false
+		}
+		return cloneMap(v), true
+	case string:
+		downloadURL := strings.TrimSpace(v)
+		if downloadURL == "" {
+			return nil, false
+		}
+		return map[string]any{"url": downloadURL}, true
+	default:
+		return nil, false
+	}
+}
+
+func downloadEntryForTrack(trackID string) (map[string]any, bool) {
+	id, err := sanitizeID(trackID)
+	if err != nil {
+		return nil, false
+	}
+	info, err := os.Stat(filepath.Join(DownloadsDir(), id+".zip"))
+	if err != nil || info.IsDir() {
+		return nil, false
+	}
+	entry := map[string]any{"url": publicDownloadURL(id)}
+	if version := trackContentVersion(id); version != "" {
+		entry["version"] = version
+	}
+	return entry, true
+}
+
+func trackContentVersion(id string) string {
+	uiDir := filepath.Join(contentDir(), "tracks", id, "ui")
+	if version := readContentVersion(filepath.Join(uiDir, "ui_track.json")); version != "" {
+		return version
+	}
+	entries, err := os.ReadDir(uiDir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if version := readContentVersion(filepath.Join(uiDir, entry.Name(), "ui_track.json")); version != "" {
+			return version
+		}
+	}
+	return ""
+}
+
+func writeCMDocument(path string, doc map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
